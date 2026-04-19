@@ -150,10 +150,11 @@ TModbus_Status	Modbus_Slave_Rx(TModbus* p)
 {
 	uint16_t	crc;	
 	uint8_t		byte_cntr = 0;
-	uint8_t		max_id = (p->config.max_id == 0u) ? MODBUS_DEFAULT_MAX_ID : p->config.max_id;
+	uint8_t		max_id;
 
 	p->error.all = 0;
 	p->status = data_await;
+	max_id = (p->config.max_id == 0u) ? MODBUS_DEFAULT_MAX_ID : p->config.max_id;
 	memset(p->txrx_params.txrx_buffer, 0, sizeof(p->txrx_params.txrx_buffer));
 	p->txrx_params.id = p->usart_params.rx_data[byte_cntr++];
 	if (p->txrx_params.id > max_id)
