@@ -5,18 +5,160 @@
 */
 
 #include "modbus.h"
-#include "project_ver.h"
-#include "stdio.h"
-TModbus usart1;
-TModbus	uart8;
+#include <stdint.h>
+#include <string.h>
+
+#define MODBUS_MAX_INSTANCES	4u
+
+static TModbus* modbus_instances[MODBUS_MAX_INSTANCES];
+static uint8_t modbus_instance_count;
+
+static void Modbus_RegisterInstance(TModbus* p)
+{
+	if (p == NULL)
+	{
+		return;
+	}
+
+	for (uint8_t i = 0; i < modbus_instance_count; i++)
+	{
+		if (modbus_instances[i] == p)
+		{
+			return;
+		}
+	}
+
+	if (modbus_instance_count < MODBUS_MAX_INSTANCES)
+	{
+		modbus_instances[modbus_instance_count++] = p;
+	}
+}
+
+static uint32_t Modbus_ComputeTimeout(const TModbus_Config* config)
+{
+	uint64_t numerator;
+	uint64_t result;
+
+	if (config == NULL || config->baud_rate == 0u)
+	{
+		return 0u;
+	}
+
+	numerator = (uint64_t)config->update_frequency * config->interframe_bits;
+	result = numerator / config->baud_rate;
+	if (result > UINT32_MAX)
+	{
+		return UINT32_MAX;
+	}
+
+	return (uint32_t)result;
+}
+
+void Modbus_Config_Init(TModbus_Config* config)
+{
+	if (config == NULL)
+	{
+		return;
+	}
+
+	config->baud_rate = MODBUS_DEFAULT_BAUDRATE;
+	config->update_frequency = MODBUS_DEFAULT_UPDATE_FREQ;
+	config->interframe_bits = MODBUS_INTERFRAME_BITS;
+	config->max_id = MODBUS_DEFAULT_MAX_ID;
+}
+
+void Modbus_RegisterOps_Init(TModbus_RegisterOps* ops, void* context, Modbus_ReadRegister read, Modbus_WriteRegister write, uint16_t register_count)
+{
+	if (ops == NULL)
+	{
+		return;
+	}
+
+	ops->context = context;
+	ops->read = read;
+	ops->write = write;
+	ops->register_count = register_count;
+}
+
+static bool Modbus_IsRegisterRangeValid(const TModbus* p, uint16_t address, uint16_t count)
+{
+	if (p == NULL)
+	{
+		return false;
+	}
+
+	if (p->register_ops.register_count == 0u)
+	{
+		return true;
+	}
+
+	if (address >= p->register_ops.register_count)
+	{
+		return false;
+	}
+
+	if (count > (p->register_ops.register_count - address))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool Modbus_ReadRegisterValue(TModbus* p, uint16_t address, uint16_t* value)
+{
+	if (p == NULL || p->register_ops.read == NULL || value == NULL)
+	{
+		return false;
+	}
+
+	if (!Modbus_IsRegisterRangeValid(p, address, 1u))
+	{
+		return false;
+	}
+
+	return p->register_ops.read(p->register_ops.context, address, value);
+}
+
+bool Modbus_WriteRegisterValue(TModbus* p, uint16_t address, uint16_t value)
+{
+	if (p == NULL || p->register_ops.write == NULL)
+	{
+		return false;
+	}
+
+	if (!Modbus_IsRegisterRangeValid(p, address, 1u))
+	{
+		return false;
+	}
+
+	return p->register_ops.write(p->register_ops.context, address, value);
+}
+
+void Modbus_SetBaudRate(TModbus* p, uint32_t baud_rate)
+{
+	if (p == NULL || baud_rate == 0u)
+	{
+		return;
+	}
+
+	p->config.baud_rate = baud_rate;
+	p->usart_params.huart_p->Init.BaudRate = baud_rate;
+	p->timeout = Modbus_ComputeTimeout(&p->config);
+}
 
 TModbus_Status	Modbus_Slave_Rx(TModbus* p)
 {
 	uint16_t	crc;	
 	uint8_t		byte_cntr = 0;
+	uint8_t		max_id;
+
+	p->error.all = 0;
+	p->status = data_await;
+	max_id = (p->config.max_id == 0u) ? MODBUS_DEFAULT_MAX_ID : p->config.max_id;
 	memset(p->txrx_params.txrx_buffer, 0, sizeof(p->txrx_params.txrx_buffer));
 	p->txrx_params.id = p->usart_params.rx_data[byte_cntr++];
-	if (p->txrx_params.id > MAX_ID_NUMBER)
+	if (p->txrx_params.id > max_id)
 	{
 		p->error.bit.id_error = 1;
 		p->status = id_error;
@@ -27,7 +169,7 @@ TModbus_Status	Modbus_Slave_Rx(TModbus* p)
 	}
 	// Command	
 	p->txrx_params.cmd = p->usart_params.rx_data[byte_cntr++];
-	if ( p->txrx_params.cmd != PRESET_MULTPL_REGS && p->txrx_params.cmd != PRESET_SINGLE_REG && p->txrx_params.cmd != READ_HOLDING_REGS)
+	if ( p->txrx_params.cmd != MODBUS_FUNC_PRESET_MULTIPLE_REGS && p->txrx_params.cmd != MODBUS_FUNC_PRESET_SINGLE_REG && p->txrx_params.cmd != MODBUS_FUNC_READ_HOLDING_REGS)
 	{
 		p->error.bit.cmd_error = true;
 		p->status = cmd_error;
@@ -44,14 +186,27 @@ TModbus_Status	Modbus_Slave_Rx(TModbus* p)
 	p->txrx_params.regs_number = p->usart_params.rx_data[byte_cntr++]<< 8;
 	p->txrx_params.regs_number += p->usart_params.rx_data[byte_cntr++];
 
+	if (p->txrx_params.regs_number == 0u)
+	{
+		p->status = data_error;
+		p->error.bit.data_error = true;
+	}
+
 	if ( !p->error.all)
 	{
-		if (p->txrx_params.cmd == PRESET_MULTPL_REGS )
+		if (p->txrx_params.cmd == MODBUS_FUNC_PRESET_MULTIPLE_REGS )
 		{
+			uint32_t expected_bytes = (uint32_t)p->txrx_params.regs_number * MODBUS_REG_BYTES;
 			p->txrx_params.bytes_numb =p->usart_params.rx_data[byte_cntr++];
-			if(p->txrx_params.bytes_numb > WRITE_BUFF_SIZE)
+			if (expected_bytes > WRITE_BUFF_SIZE)
 			{
 				p->status = data_error;
+				p->error.bit.data_error = true;
+			}
+			else if (p->txrx_params.bytes_numb != expected_bytes)
+			{
+				p->status = data_error;
+				p->error.bit.data_error = true;
 			}
 			else
 			{
@@ -61,18 +216,19 @@ TModbus_Status	Modbus_Slave_Rx(TModbus* p)
 				}
 			}				
 		}
-		else if (p->txrx_params.cmd == PRESET_SINGLE_REG)
+		else if (p->txrx_params.cmd == MODBUS_FUNC_PRESET_SINGLE_REG)
 		{
 			p->txrx_params.txrx_buffer[0] = p->usart_params.rx_data[byte_cntr++];
 			p->txrx_params.txrx_buffer[1] = p->usart_params.rx_data[byte_cntr++];
 		}
 // crc
-		p->txrx_params.crc_result =  p->usart_params.rx_data[byte_cntr++] << 8;
+		p->txrx_params.crc_result =  p->usart_params.rx_data[byte_cntr++] << MODBUS_HIGH_BYTE_SHIFT;
 		p->txrx_params.crc_result += p->usart_params.rx_data[byte_cntr++];
-		crc = CRC16((uint8_t*)p->usart_params.rx_data, byte_cntr - 2);		
+		crc = CRC16((uint8_t*)p->usart_params.rx_data, byte_cntr - MODBUS_CRC_BYTES);		
 		if (crc != p->txrx_params.crc_result)
 		{
 			p->status = crc_error;
+			p->error.bit.crc_error = true;
 		}
 		else
 		{
@@ -92,39 +248,40 @@ TModbus_Status	Modbus_Slave_Tx(TModbus* p)
 //cmd
 	p->usart_params.tx_data[byte_cntr++] = p->txrx_params.cmd;
 
-	if ( p->txrx_params.cmd == READ_HOLDING_REGS )
+	if ( p->txrx_params.cmd == MODBUS_FUNC_READ_HOLDING_REGS )
 	{
+		uint16_t payload_bytes = (uint16_t)(p->txrx_params.regs_number * MODBUS_REG_BYTES);
 // bytes amount
-		p->usart_params.tx_data[byte_cntr++] = p->txrx_params.regs_number<<1;
+		p->usart_params.tx_data[byte_cntr++] = payload_bytes;
 //	data
-		for(uint8_t i = 0; i < p->txrx_params.regs_number<<1; i++)
+		for(uint16_t byte_index = 0; byte_index < payload_bytes; byte_index++)
 		{
-			p->usart_params.tx_data[byte_cntr++] = p->txrx_params.txrx_buffer[i];			
+			p->usart_params.tx_data[byte_cntr++] = p->txrx_params.txrx_buffer[byte_index];			
 		}
 	}
-	else if ( p->txrx_params.cmd == PRESET_MULTPL_REGS )
+	else if ( p->txrx_params.cmd == MODBUS_FUNC_PRESET_MULTIPLE_REGS )
 	{
 // Data address	
-		p->usart_params.tx_data[byte_cntr++] = (p->txrx_params.data_addr&0xFF00)>>8;
-		p->usart_params.tx_data[byte_cntr++] = (p->txrx_params.data_addr&0xFF);
+		p->usart_params.tx_data[byte_cntr++] = (p->txrx_params.data_addr & 0xFF00) >> MODBUS_HIGH_BYTE_SHIFT;
+		p->usart_params.tx_data[byte_cntr++] = (p->txrx_params.data_addr & MODBUS_BYTE_MASK);
 
 // number of regs
-		p->usart_params.tx_data[byte_cntr++] = (p->txrx_params.regs_number&0xFF00)>>8;
-		p->usart_params.tx_data[byte_cntr++] = p->txrx_params.regs_number&0xFF;	
+		p->usart_params.tx_data[byte_cntr++] = (p->txrx_params.regs_number & 0xFF00) >> MODBUS_HIGH_BYTE_SHIFT;
+		p->usart_params.tx_data[byte_cntr++] = p->txrx_params.regs_number & MODBUS_BYTE_MASK;	
 	}
-	else if (p->txrx_params.cmd == PRESET_SINGLE_REG)
+	else if (p->txrx_params.cmd == MODBUS_FUNC_PRESET_SINGLE_REG)
 	{
 //address 
-		p->usart_params.tx_data[byte_cntr++] = (p->txrx_params.data_addr&0xFF00)>>8;
-		p->usart_params.tx_data[byte_cntr++] = p->txrx_params.data_addr&0xFF;
+		p->usart_params.tx_data[byte_cntr++] = (p->txrx_params.data_addr & 0xFF00) >> MODBUS_HIGH_BYTE_SHIFT;
+		p->usart_params.tx_data[byte_cntr++] = p->txrx_params.data_addr & MODBUS_BYTE_MASK;
 //written data
 		p->usart_params.tx_data[byte_cntr++] = p->txrx_params.txrx_buffer[0];
 		p->usart_params.tx_data[byte_cntr++] = p->txrx_params.txrx_buffer[1];
 	}
 // crc
-	crc = CRC16((uint8_t*)p->usart_params.rx_data, byte_cntr - 2);	
-	p->usart_params.tx_data[byte_cntr++] = (crc&0xFF00)>>8;
-	p->usart_params.tx_data[byte_cntr++] = crc&0xFF;
+	crc = CRC16((uint8_t*)p->usart_params.tx_data, byte_cntr);	
+	p->usart_params.tx_data[byte_cntr++] = (crc & 0xFF00) >> MODBUS_HIGH_BYTE_SHIFT;
+	p->usart_params.tx_data[byte_cntr++] = crc & MODBUS_BYTE_MASK;
 	p->transmit_flag = 1;
 	HAL_UART_Transmit_DMA(p->usart_params.huart_p, (uint8_t*)p->usart_params.tx_data, byte_cntr);
 	return p->status;
@@ -132,43 +289,68 @@ TModbus_Status	Modbus_Slave_Tx(TModbus* p)
 
 void	Modbus_Process(TModbus* p)
 {
-	uint16_t* data;
-	uint16_t* dest;
-	
 	if(Modbus_Slave_Rx(p) == data_recieved)
 	{
-		if(p->txrx_params.cmd == PRESET_MULTPL_REGS)
+		if(p->txrx_params.cmd == MODBUS_FUNC_PRESET_MULTIPLE_REGS)
 		{
-			int i = 0;
-			while(i < p->txrx_params.bytes_numb)
+			if (!Modbus_IsRegisterRangeValid(p, p->txrx_params.data_addr, p->txrx_params.regs_number))
 			{
-				dest = DEST + p->txrx_params.data_addr + i;
-				p->write_reg = p->txrx_params.txrx_buffer[i++]<<8;
-				p->write_reg += p->txrx_params.txrx_buffer[i++];
-				data = &p->write_reg;
-				memcpy(dest, data, 2);
+				p->status = data_error;
+				p->error.bit.data_error = true;
+			}
+			else
+			{
+				for(uint16_t reg_index = 0; reg_index < p->txrx_params.regs_number; reg_index++)
+				{
+					uint16_t buffer_index = reg_index * MODBUS_REG_BYTES;
+					p->write_reg = (uint16_t)(p->txrx_params.txrx_buffer[buffer_index] << MODBUS_HIGH_BYTE_SHIFT);
+					p->write_reg += p->txrx_params.txrx_buffer[buffer_index + 1u];
+					if (!Modbus_WriteRegisterValue(p, (uint16_t)(p->txrx_params.data_addr + reg_index), p->write_reg))
+					{
+						p->status = data_error;
+						p->error.bit.data_error = true;
+						break;
+					}
+				}
 			}
 		}
-		else if(p->txrx_params.cmd == PRESET_SINGLE_REG)
+		else if(p->txrx_params.cmd == MODBUS_FUNC_PRESET_SINGLE_REG)
 		{
-				dest = DEST + p->txrx_params.data_addr;
-				p->write_reg = p->txrx_params.txrx_buffer[0]<<8;
-				p->write_reg += p->txrx_params.txrx_buffer[1];
-				data = &p->write_reg;
-				memcpy(dest, data, 2);
-		}
-		else if(p->txrx_params.cmd == READ_HOLDING_REGS)
-		{
-			uint16_t i = 0;
-			while(i < (p->txrx_params.regs_number<<1))
+			p->write_reg = (uint16_t)(p->txrx_params.txrx_buffer[0] << MODBUS_HIGH_BYTE_SHIFT);
+			p->write_reg += p->txrx_params.txrx_buffer[1];
+			if (!Modbus_WriteRegisterValue(p, p->txrx_params.data_addr, p->write_reg))
 			{
-				dest = DEST + (p->txrx_params.data_addr + i);
-				p->read_reg = *dest;
-				p->txrx_params.txrx_buffer[i++] = (p->read_reg&0xFF00)>>8;
-				p->txrx_params.txrx_buffer[i++] = (p->read_reg&0xFF);
+				p->status = data_error;
+				p->error.bit.data_error = true;
 			}
 		}
-		Modbus_Slave_Tx(p);
+		else if(p->txrx_params.cmd == MODBUS_FUNC_READ_HOLDING_REGS)
+		{
+			if (!Modbus_IsRegisterRangeValid(p, p->txrx_params.data_addr, p->txrx_params.regs_number))
+			{
+				p->status = data_error;
+				p->error.bit.data_error = true;
+			}
+			else
+			{
+				for(uint16_t reg_index = 0; reg_index < p->txrx_params.regs_number; reg_index++)
+				{
+					uint16_t buffer_index = reg_index * MODBUS_REG_BYTES;
+					if (!Modbus_ReadRegisterValue(p, (uint16_t)(p->txrx_params.data_addr + reg_index), &p->read_reg))
+					{
+						p->status = data_error;
+						p->error.bit.data_error = true;
+						break;
+					}
+					p->txrx_params.txrx_buffer[buffer_index] = (uint8_t)((p->read_reg & 0xFF00) >> MODBUS_HIGH_BYTE_SHIFT);
+					p->txrx_params.txrx_buffer[buffer_index + 1u] = (uint8_t)(p->read_reg & MODBUS_BYTE_MASK);
+				}
+			}
+		}
+		if (p->status == data_recieved)
+		{
+			Modbus_Slave_Tx(p);
+		}
 	}		
 }
 
@@ -181,18 +363,47 @@ void Modbus_TxCallback(TModbus* p)
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) // standart HAL tx callback function 
 {
-	if (huart->Instance == USART1)
-		Modbus_TxCallback(&usart1);	
-	else if (huart->Instance == UART8)
-		Modbus_TxCallback(&uart8);
+	for (uint8_t i = 0; i < modbus_instance_count; i++)
+	{
+		TModbus* instance = modbus_instances[i];
+		if (instance != NULL && instance->usart_params.huart_p == huart)
+		{
+			Modbus_TxCallback(instance);
+			break;
+		}
+	}
 }
 
-void	Modbus_Init(TModbus* p,	UART_HandleTypeDef* uart_p) // initing modbus variable with specified uart pointer (something like huart1 or huart8 etc.)
+void	Modbus_Init(TModbus* p,	UART_HandleTypeDef* uart_p, const TModbus_Config* config, const TModbus_RegisterOps* register_ops) // initializing modbus variable with specified uart pointer (something like huart1 or huart8 etc.)
 {
+	if (p == NULL || uart_p == NULL)
+	{
+		return;
+	}
+
 	memset(p, 0, sizeof(TModbus));
 	p->usart_params.huart_p = uart_p;
-	p->usart_params.huart_p->Init.BaudRate = UART_SPEED;
-	p->timeout = (IT_FREQ*28)/p->usart_params.huart_p->Init.BaudRate;
+	if (config != NULL)
+	{
+		p->config = *config;
+	}
+	else
+	{
+		Modbus_Config_Init(&p->config);
+	}
+
+	if (register_ops != NULL)
+	{
+		p->register_ops = *register_ops;
+	}
+	else
+	{
+		Modbus_RegisterOps_Init(&p->register_ops, NULL, NULL, NULL, 0u);
+	}
+
+	p->usart_params.huart_p->Init.BaudRate = p->config.baud_rate;
+	p->timeout = Modbus_ComputeTimeout(&p->config);
+	Modbus_RegisterInstance(p);
 	HAL_UART_Receive_DMA(p->usart_params.huart_p, (uint8_t*)p->usart_params.rx_data, RXTX_BUFF_SIZE);
 }
 
@@ -215,32 +426,5 @@ void	Modbus_Data_Wait(TModbus* p)
 void	Modbus_Update(TModbus* p) //call this function with some frequency not lower then 20kHz
 {
 	Modbus_Data_Wait(p);		
-	if(ram_params.usart_prev_speed != ram_params.usart_speed) 
-	{
-		switch(ram_params.usart_speed)
-		{
-			case 115200:
-				p->usart_params.huart_p->Init.BaudRate = ram_params.usart_speed;
-			break;
-			
-			case 57600:
-				p->usart_params.huart_p->Init.BaudRate = ram_params.usart_speed;
-			break;
-			
-			case 19200:
-				p->usart_params.huart_p->Init.BaudRate = ram_params.usart_speed;
-			break;
-			
-			case 9600:
-				p->usart_params.huart_p->Init.BaudRate = ram_params.usart_speed;
-			break;
-		}
-		p->timeout = (IT_FREQ*28)/p->usart_params.huart_p->Init.BaudRate;
-	}
-}
-
-void	Params_Init(TRam_params* p)
-{
-	sprintf(p->date_time, "%d . %d . %d , %d : %d",VERSION_DAY, VERSION_MONTH, VERSION_YEAR, VERSION_HOUR, VERSION_MIN);
 }
 //------------------------------------------------------------
