@@ -15,6 +15,9 @@ typedef struct
 	uint16_t count;
 } TestRegisterContext;
 
+static void WriteUint16BE(uint8_t* buffer, uint16_t* index, uint16_t value);
+static void AssertCrcAt(const uint8_t* buffer, uint16_t data_length, uint16_t crc_index);
+
 void HAL_UART_DMAStop(UART_HandleTypeDef* huart)
 {
 	(void)huart;
@@ -94,10 +97,8 @@ static void BuildRequest(uint8_t* buffer,
 	uint16_t index = 0;
 	buffer[index++] = id;
 	buffer[index++] = cmd;
-	buffer[index++] = (uint8_t)(address >> MODBUS_HIGH_BYTE_SHIFT);
-	buffer[index++] = (uint8_t)(address & MODBUS_BYTE_MASK);
-	buffer[index++] = (uint8_t)(regs >> MODBUS_HIGH_BYTE_SHIFT);
-	buffer[index++] = (uint8_t)(regs & MODBUS_BYTE_MASK);
+	WriteUint16BE(buffer, &index, address);
+	WriteUint16BE(buffer, &index, regs);
 	if (payload_len > 0u)
 	{
 		if (include_byte_count)
@@ -108,8 +109,7 @@ static void BuildRequest(uint8_t* buffer,
 		index += payload_len;
 	}
 	uint16_t crc = CRC16(buffer, index);
-	buffer[index++] = (uint8_t)(crc >> MODBUS_HIGH_BYTE_SHIFT);
-	buffer[index++] = (uint8_t)(crc & MODBUS_BYTE_MASK);
+	WriteUint16BE(buffer, &index, crc);
 	*out_length = index;
 }
 
@@ -121,8 +121,9 @@ static void BuildSingleRegisterRequest(uint8_t* buffer,
 {
 	uint8_t payload[2];
 
-	payload[0] = (uint8_t)(value >> MODBUS_HIGH_BYTE_SHIFT);
-	payload[1] = (uint8_t)(value & MODBUS_BYTE_MASK);
+	uint16_t payload_index = 0u;
+
+	WriteUint16BE(payload, &payload_index, value);
 	BuildRequest(buffer,
 		id,
 		MODBUS_FUNC_PRESET_SINGLE_REG,
@@ -132,6 +133,19 @@ static void BuildSingleRegisterRequest(uint8_t* buffer,
 		(uint8_t)sizeof(payload),
 		false,
 		out_length);
+}
+
+static void WriteUint16BE(uint8_t* buffer, uint16_t* index, uint16_t value)
+{
+	buffer[(*index)++] = (uint8_t)(value >> MODBUS_HIGH_BYTE_SHIFT);
+	buffer[(*index)++] = (uint8_t)(value & MODBUS_BYTE_MASK);
+}
+
+static void AssertCrcAt(const uint8_t* buffer, uint16_t data_length, uint16_t crc_index)
+{
+	uint16_t crc = CRC16((uint8_t*)buffer, data_length);
+	assert(buffer[crc_index] == (uint8_t)(crc >> MODBUS_HIGH_BYTE_SHIFT));
+	assert(buffer[crc_index + 1u] == (uint8_t)(crc & MODBUS_BYTE_MASK));
 }
 
 static void ResetTransmitCapture(void)
@@ -178,9 +192,7 @@ static void TestReadHoldingRegisters(void)
 	assert(last_tx_buffer[5] == 0x00u);
 	assert(last_tx_buffer[6] == 0x11u);
 
-	uint16_t crc = CRC16(last_tx_buffer, 7u);
-	assert(last_tx_buffer[7] == (uint8_t)(crc >> MODBUS_HIGH_BYTE_SHIFT));
-	assert(last_tx_buffer[8] == (uint8_t)(crc & MODBUS_BYTE_MASK));
+	AssertCrcAt(last_tx_buffer, 7u, 7u);
 }
 
 static void TestWriteSingleRegister(void)
@@ -208,9 +220,7 @@ static void TestWriteSingleRegister(void)
 	assert(last_tx_buffer[4] == 0xBEu);
 	assert(last_tx_buffer[5] == 0xEFu);
 
-	uint16_t crc = CRC16(last_tx_buffer, 6u);
-	assert(last_tx_buffer[6] == (uint8_t)(crc >> MODBUS_HIGH_BYTE_SHIFT));
-	assert(last_tx_buffer[7] == (uint8_t)(crc & MODBUS_BYTE_MASK));
+	AssertCrcAt(last_tx_buffer, 6u, 6u);
 }
 
 static void TestWriteMultipleRegisters(void)
@@ -240,9 +250,7 @@ static void TestWriteMultipleRegisters(void)
 	assert(last_tx_buffer[4] == 0x00u);
 	assert(last_tx_buffer[5] == 0x02u);
 
-	uint16_t crc = CRC16(last_tx_buffer, 6u);
-	assert(last_tx_buffer[6] == (uint8_t)(crc >> MODBUS_HIGH_BYTE_SHIFT));
-	assert(last_tx_buffer[7] == (uint8_t)(crc & MODBUS_BYTE_MASK));
+	AssertCrcAt(last_tx_buffer, 6u, 6u);
 }
 
 int main(void)
