@@ -82,14 +82,14 @@ static bool TestWriteRegister(void* context, uint16_t address, uint16_t value)
 }
 
 static void BuildRequest(uint8_t* buffer,
-												 uint8_t id,
-												 uint8_t cmd,
-												 uint16_t address,
-												 uint16_t regs,
-												 const uint8_t* payload,
-												 uint8_t payload_len,
-												 bool include_byte_count,
-												 uint16_t* out_length)
+	uint8_t id,
+	uint8_t cmd,
+	uint16_t address,
+	uint16_t regs,
+	const uint8_t* payload,
+	uint8_t payload_len,
+	bool include_byte_count,
+	uint16_t* out_length)
 {
 	uint16_t index = 0;
 	buffer[index++] = id;
@@ -111,6 +111,27 @@ static void BuildRequest(uint8_t* buffer,
 	buffer[index++] = (uint8_t)(crc >> MODBUS_HIGH_BYTE_SHIFT);
 	buffer[index++] = (uint8_t)(crc & MODBUS_BYTE_MASK);
 	*out_length = index;
+}
+
+static void BuildSingleRegisterRequest(uint8_t* buffer,
+	uint8_t id,
+	uint16_t address,
+	uint16_t value,
+	uint16_t* out_length)
+{
+	uint8_t payload[2];
+
+	payload[0] = (uint8_t)(value >> MODBUS_HIGH_BYTE_SHIFT);
+	payload[1] = (uint8_t)(value & MODBUS_BYTE_MASK);
+	BuildRequest(buffer,
+		id,
+		MODBUS_FUNC_PRESET_SINGLE_REG,
+		address,
+		1u,
+		payload,
+		(uint8_t)sizeof(payload),
+		false,
+		out_length);
 }
 
 static void ResetTransmitCapture(void)
@@ -169,11 +190,10 @@ static void TestWriteSingleRegister(void)
 	TModbus modbus;
 	UART_HandleTypeDef uart = {0};
 	uint8_t request[16] = {0};
-	uint8_t payload[] = {0xBEu, 0xEFu};
 	uint16_t request_length = 0u;
 
 	SetupModbus(&modbus, &uart, &ctx);
-	BuildRequest(request, 1u, MODBUS_FUNC_PRESET_SINGLE_REG, 2u, 1u, payload, sizeof(payload), false, &request_length);
+	BuildSingleRegisterRequest(request, 1u, 2u, 0xBEEFu, &request_length);
 	memcpy((uint8_t*)modbus.usart_params.rx_data, request, request_length);
 
 	ResetTransmitCapture();
