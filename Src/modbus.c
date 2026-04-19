@@ -6,6 +6,7 @@
 
 #include "modbus.h"
 #include <stdint.h>
+#include <string.h>
 
 #define MODBUS_MAX_INSTANCES	4u
 
