@@ -5,6 +5,7 @@
 */
 
 #include "modbus.h"
+#include <stdint.h>
 
 #define MODBUS_MAX_INSTANCES	4u
 
@@ -34,12 +35,22 @@ static void Modbus_RegisterInstance(TModbus* p)
 
 static uint32_t Modbus_ComputeTimeout(const TModbus_Config* config)
 {
+	uint64_t numerator;
+	uint64_t result;
+
 	if (config == NULL || config->baud_rate == 0u)
 	{
 		return 0u;
 	}
 
-	return (config->update_frequency * config->interframe_bits) / config->baud_rate;
+	numerator = (uint64_t)config->update_frequency * config->interframe_bits;
+	result = numerator / config->baud_rate;
+	if (result > UINT32_MAX)
+	{
+		return UINT32_MAX;
+	}
+
+	return (uint32_t)result;
 }
 
 void Modbus_Config_Init(TModbus_Config* config)
@@ -237,10 +248,11 @@ TModbus_Status	Modbus_Slave_Tx(TModbus* p)
 
 	if ( p->txrx_params.cmd == MODBUS_FUNC_READ_HOLDING_REGS )
 	{
+		uint16_t payload_bytes = (uint16_t)(p->txrx_params.regs_number * MODBUS_REG_BYTES);
 // bytes amount
-		p->usart_params.tx_data[byte_cntr++] = p->txrx_params.regs_number * MODBUS_REG_BYTES;
+		p->usart_params.tx_data[byte_cntr++] = payload_bytes;
 //	data
-		for(uint16_t byte_index = 0; byte_index < p->txrx_params.regs_number * MODBUS_REG_BYTES; byte_index++)
+		for(uint16_t byte_index = 0; byte_index < payload_bytes; byte_index++)
 		{
 			p->usart_params.tx_data[byte_cntr++] = p->txrx_params.txrx_buffer[byte_index];			
 		}
@@ -360,7 +372,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) // standart HAL tx callb
 	}
 }
 
-void	Modbus_Init(TModbus* p,	UART_HandleTypeDef* uart_p, const TModbus_Config* config, const TModbus_RegisterOps* register_ops) // initing modbus variable with specified uart pointer (something like huart1 or huart8 etc.)
+void	Modbus_Init(TModbus* p,	UART_HandleTypeDef* uart_p, const TModbus_Config* config, const TModbus_RegisterOps* register_ops) // initializing modbus variable with specified uart pointer (something like huart1 or huart8 etc.)
 {
 	if (p == NULL || uart_p == NULL)
 	{
