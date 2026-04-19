@@ -173,18 +173,24 @@ TModbus_Status	Modbus_Slave_Rx(TModbus* p)
 	p->txrx_params.regs_number = p->usart_params.rx_data[byte_cntr++]<< 8;
 	p->txrx_params.regs_number += p->usart_params.rx_data[byte_cntr++];
 
+	if (p->txrx_params.regs_number == 0u)
+	{
+		p->status = data_error;
+		p->error.bit.data_error = true;
+	}
+
 	if ( !p->error.all)
 	{
-		if (p->txrx_params.regs_number == 0u)
-		{
-			p->status = data_error;
-			p->error.bit.data_error = true;
-		}
-		else if (p->txrx_params.cmd == MODBUS_FUNC_PRESET_MULTIPLE_REGS )
+		if (p->txrx_params.cmd == MODBUS_FUNC_PRESET_MULTIPLE_REGS )
 		{
 			uint32_t expected_bytes = (uint32_t)p->txrx_params.regs_number * MODBUS_REG_BYTES;
 			p->txrx_params.bytes_numb =p->usart_params.rx_data[byte_cntr++];
-			if (expected_bytes > WRITE_BUFF_SIZE || p->txrx_params.bytes_numb != expected_bytes)
+			if (expected_bytes > WRITE_BUFF_SIZE)
+			{
+				p->status = data_error;
+				p->error.bit.data_error = true;
+			}
+			else if (p->txrx_params.bytes_numb != expected_bytes)
 			{
 				p->status = data_error;
 				p->error.bit.data_error = true;
@@ -234,9 +240,9 @@ TModbus_Status	Modbus_Slave_Tx(TModbus* p)
 // bytes amount
 		p->usart_params.tx_data[byte_cntr++] = p->txrx_params.regs_number * MODBUS_REG_BYTES;
 //	data
-		for(uint16_t i = 0; i < p->txrx_params.regs_number * MODBUS_REG_BYTES; i++)
+		for(uint16_t byte_index = 0; byte_index < p->txrx_params.regs_number * MODBUS_REG_BYTES; byte_index++)
 		{
-			p->usart_params.tx_data[byte_cntr++] = p->txrx_params.txrx_buffer[i];			
+			p->usart_params.tx_data[byte_cntr++] = p->txrx_params.txrx_buffer[byte_index];			
 		}
 	}
 	else if ( p->txrx_params.cmd == MODBUS_FUNC_PRESET_MULTIPLE_REGS )
