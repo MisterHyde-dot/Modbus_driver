@@ -41,7 +41,7 @@ void HAL_UART_Transmit_DMA(UART_HandleTypeDef* huart, uint8_t* data, uint16_t si
 	}
 }
 
-uint16_t CRC16(uint8_t* data, uint16_t length)
+uint16_t CRC16(const uint8_t* data, uint16_t length)
 {
 	uint16_t crc = 0xFFFFu;
 	for (uint16_t i = 0; i < length; i++)
@@ -143,7 +143,7 @@ static void WriteUint16BE(uint8_t* buffer, uint16_t* index, uint16_t value)
 
 static void AssertCrcAt(const uint8_t* buffer, uint16_t data_length, uint16_t crc_index)
 {
-	uint16_t crc = CRC16((uint8_t*)buffer, data_length);
+	uint16_t crc = CRC16(buffer, data_length);
 	assert(buffer[crc_index] == (uint8_t)(crc >> MODBUS_HIGH_BYTE_SHIFT));
 	assert(buffer[crc_index + 1u] == (uint8_t)(crc & MODBUS_BYTE_MASK));
 }
