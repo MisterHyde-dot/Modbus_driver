@@ -120,7 +120,6 @@ static void BuildSingleRegisterRequest(uint8_t* buffer,
 	uint16_t* out_length)
 {
 	uint8_t payload[2];
-
 	uint16_t payload_index = 0u;
 
 	WriteUint16BE(payload, &payload_index, value);
