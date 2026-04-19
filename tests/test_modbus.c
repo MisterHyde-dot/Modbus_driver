@@ -154,6 +154,14 @@ static void ResetTransmitCapture(void)
 	last_tx_uart = NULL;
 }
 
+static void SetModbusRequest(TModbus* modbus, const uint8_t* request, uint16_t length)
+{
+	for (uint16_t i = 0; i < length; i++)
+	{
+		modbus->usart_params.rx_data[i] = request[i];
+	}
+}
+
 static void SetupModbus(TModbus* modbus, UART_HandleTypeDef* uart, TestRegisterContext* ctx)
 {
 	TModbus_Config config;
@@ -176,7 +184,7 @@ static void TestReadHoldingRegisters(void)
 
 	SetupModbus(&modbus, &uart, &ctx);
 	BuildRequest(request, 1u, MODBUS_FUNC_READ_HOLDING_REGS, 1u, 2u, NULL, 0u, false, &request_length);
-	memcpy((uint8_t*)modbus.usart_params.rx_data, request, request_length);
+	SetModbusRequest(&modbus, request, request_length);
 
 	ResetTransmitCapture();
 	Modbus_Process(&modbus);
@@ -205,7 +213,7 @@ static void TestWriteSingleRegister(void)
 
 	SetupModbus(&modbus, &uart, &ctx);
 	BuildSingleRegisterRequest(request, 1u, 2u, 0xBEEFu, &request_length);
-	memcpy((uint8_t*)modbus.usart_params.rx_data, request, request_length);
+	SetModbusRequest(&modbus, request, request_length);
 
 	ResetTransmitCapture();
 	Modbus_Process(&modbus);
@@ -234,7 +242,7 @@ static void TestWriteMultipleRegisters(void)
 
 	SetupModbus(&modbus, &uart, &ctx);
 	BuildRequest(request, 1u, MODBUS_FUNC_PRESET_MULTIPLE_REGS, 0u, 2u, payload, sizeof(payload), true, &request_length);
-	memcpy((uint8_t*)modbus.usart_params.rx_data, request, request_length);
+	SetModbusRequest(&modbus, request, request_length);
 
 	ResetTransmitCapture();
 	Modbus_Process(&modbus);
@@ -252,10 +260,31 @@ static void TestWriteMultipleRegisters(void)
 	AssertCrcAt(last_tx_buffer, 6u, 6u);
 }
 
+static void TestReadHoldingRegistersOutOfRange(void)
+{
+	uint16_t regs[] = {0x0102u, 0x0304u};
+	TestRegisterContext ctx = {.regs = regs, .count = 2u};
+	TModbus modbus;
+	UART_HandleTypeDef uart = {0};
+	uint8_t request[16] = {0};
+	uint16_t request_length = 0u;
+
+	SetupModbus(&modbus, &uart, &ctx);
+	BuildRequest(request, 1u, MODBUS_FUNC_READ_HOLDING_REGS, 1u, 2u, NULL, 0u, false, &request_length);
+	SetModbusRequest(&modbus, request, request_length);
+
+	ResetTransmitCapture();
+	Modbus_Process(&modbus);
+
+	assert(modbus.status == data_error);
+	assert(last_tx_length == 0u);
+}
+
 int main(void)
 {
 	TestReadHoldingRegisters();
 	TestWriteSingleRegister();
 	TestWriteMultipleRegisters();
+	TestReadHoldingRegistersOutOfRange();
 	return 0;
 }
